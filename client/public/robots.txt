@@ -1,0 +1,18 @@
+# https://www.robotstxt.org/robotstxt.html
+User-agent: *
+Allow: /
+
+# Disallow admin and private routes
+Disallow: /admin
+Disallow: /upload-data
+Disallow: /business-queries
+Disallow: /failing-students
+Disallow: /users-list
+
+# Allow public routes
+Allow: /
+Allow: /login
+Allow: /about
+
+# Sitemap
+Sitemap: https://your-domain.com/sitemap.xml

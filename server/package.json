@@ -1,0 +1,13 @@
+{
+  "name": "field-training-server",
+  "version": "1.0.0",
+  "description": "Field Training Application Server",
+  "main": "app.py",
+  "scripts": {
+    "start": "python app.py",
+    "dev": "nodemon --exec python app.py"
+  },
+  "dependencies": {
+    "nodemon": "^3.1.0"
+  }
+} 
