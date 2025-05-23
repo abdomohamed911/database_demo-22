@@ -420,53 +420,86 @@ def upload_data():
         
         try:
             file.save(filepath)
+            expected_columns = {'ssn', 'name', 'email', 'address', 'date_of_birth'} # For User table
 
-            if filename.endswith('.csv'):
-                df = pd.read_csv(filepath)
-            elif filename.endswith('.xlsx'):
-                df = pd.read_excel(filepath)
-            else:
-                return jsonify({"message": "Unsupported file type. Only CSV or XLSX allowed."}), 400
+            try:
+                if filename.endswith('.csv'):
+                    df = pd.read_csv(filepath)
+                elif filename.endswith('.xlsx'):
+                    df = pd.read_excel(filepath)
+                else:
+                    # This case should ideally not be reached if allowed_file is comprehensive
+                    return jsonify({"message": "Unsupported file type. Only CSV or XLSX allowed."}), 400
+            except pd.errors.EmptyDataError:
+                return jsonify({"message": "File is empty."}), 400
+            except pd.errors.ParserError:
+                return jsonify({"message": "Could not parse CSV file. Please ensure it is correctly formatted."}), 400
+            except Exception as e: # Catch other pandas related errors during read
+                return jsonify({"message": f"Error reading file: {e}. Ensure it is a valid CSV or XLSX file."}), 400
+
+            # Validate columns for User table upload
+            if not expected_columns.issubset(df.columns):
+                missing = expected_columns - set(df.columns)
+                extra = set(df.columns) - expected_columns
+                error_message = "Uploaded file columns do not match expected 'User' table structure. "
+                if missing:
+                    error_message += f"Missing columns: {', '.join(sorted(list(missing)))}. "
+                if extra:
+                    error_message += f"Unexpected columns: {', '.join(sorted(list(extra)))}. "
+                error_message += "Please ensure the file has exactly these headers: ssn, name, email, address, date_of_birth."
+                return jsonify({"message": error_message}), 400
 
             conn = get_db_connection()
             if not conn: return jsonify({"message": "Database connection error"}), 500
-
-            cursor = conn.cursor()
             
+            cursor = conn.cursor()
             rows_processed = 0
-            # --- IMPORTANT: ADAPT THIS LOGIC BASED ON YOUR UPLOADED FILE'S CONTENTS ---
-            # This example expects data for the 'User' table.
-            # You need to define a strategy for different types of uploads (e.g., a 'type' field in the form,
-            # or separate upload endpoints for 'users', 'students', 'internships').
+            
+            # --- IMPORTANT: This logic is currently specific to the 'User' table. ---
+            # For other tables, a more generic approach or different endpoints would be needed.
             try:
                 for index, row in df.iterrows():
-                    # Example for inserting/updating User data
-                    # Ensure column names match your file headers (e.g., 'ssn', 'name')
+                    # Check for presence of all expected columns for safety, though covered by above check
+                    if not all(col in row for col in expected_columns):
+                         # This individual row check might be redundant if df.columns check is robust
+                        conn.rollback() # Rollback any partial commits if processing row by row transactionally
+                        return jsonify({"message": f"Row {index + 2} is missing required data. All columns (ssn, name, email, address, date_of_birth) must have values."}), 400
+
                     sql = """
                         INSERT INTO User (ssn, name, email, address, date_of_birth)
                         VALUES (%s, %s, %s, %s, %s)
                         ON DUPLICATE KEY UPDATE name=VALUES(name), email=VALUES(email), address=VALUES(address), date_of_birth=VALUES(date_of_birth)
                     """
                     cursor.execute(sql, (
-                        row.get('ssn'),
-                        row.get('name'),
-                        row.get('email'),
-                        row.get('address'),
-                        row.get('date_of_birth')
+                        row['ssn'], # Changed from row.get('ssn') to direct access after column validation
+                        row['name'],
+                        row['email'],
+                        row['address'],
+                        row['date_of_birth']
                     ))
                     rows_processed += 1
                 conn.commit()
-                return jsonify({"message": f"File uploaded and {rows_processed} rows processed successfully!"}), 200
-            except KeyError as e:
+                return jsonify({"message": f"File uploaded and {rows_processed} rows processed successfully for 'User' table!"}), 200
+            except KeyError as e: # Should be largely caught by the column check above
                 conn.rollback()
-                return jsonify({"message": f"Missing column in uploaded file: {e}. Ensure file has correct headers (e.g., 'ssn', 'name', 'email', 'address', 'date_of_birth')."}), 400
+                return jsonify({"message": f"Error accessing data: Missing column {e} in a row. This should have been caught by initial column validation."}), 400
             except mysql.connector.Error as e:
                 conn.rollback()
-                return jsonify({"message": f"Database error inserting row: {e}. Data rolled back."}), 500
+                error_code = e.errno
+                if error_code == 1062: # Duplicate entry
+                    return jsonify({"message": f"Database error: Duplicate entry found. {e}"}), 409
+                return jsonify({"message": f"Database error processing row: {e}. Data rolled back."}), 500
+            finally: # Inner finally for connection closing if opened
+                if 'cursor' in locals() and cursor:
+                    cursor.close()
+                if 'conn' in locals() and conn and conn.is_connected():
+                    conn.close()
 
-        except Exception as e:
-            return jsonify({"message": f"Error processing file: {e}"}), 500
-        finally:
+        except Exception as e: # Outer try-except for file saving or initial pandas errors
+            # Log this error for server-side diagnostics
+            app.logger.error(f"Unhandled error in file upload: {e}")
+            return jsonify({"message": f"An unexpected error occurred during file processing: {e}"}), 500
+        finally: # Outer finally for file path cleanup
             if os.path.exists(filepath):
                 os.remove(filepath) # Clean up temp file
             if 'conn' in locals() and conn.is_connected():
@@ -604,4 +637,6 @@ def submit_evaluation():
         conn.close()
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    # Use FLASK_PORT environment variable for port, default to 5000
+    port = int(os.environ.get("FLASK_PORT", 5000))
+    app.run(debug=True, port=port)
